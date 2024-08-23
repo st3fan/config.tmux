@@ -1,160 +1,217 @@
 #!/usr/bin/env bash
+
+# Set path of script
 PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-get_tmux_option() {
-  local option value default
-  option="$1"
-  default="$2"
-  value="$(tmux show-option -gqv "$option")"
-
-  if [ -n "$value" ]; then
-    echo "$value"
-  else
-    echo "$default"
-  fi
-}
-
-set() {
-  local option=$1
-  local value=$2
-  tmux_commands+=(set-option -gq "$option" "$value" ";")
-}
-
-setw() {
-  local option=$1
-  local value=$2
-  tmux_commands+=(set-window-option -gq "$option" "$value" ";")
-}
+# import
+# shellcheck source=./builder/module_builder.sh
+source "${PLUGIN_DIR}/builder/module_builder.sh"
+# shellcheck source=./builder/window_builder.sh
+source "${PLUGIN_DIR}/builder/window_builder.sh"
+# shellcheck source=./builder/pane_builder.sh
+source "${PLUGIN_DIR}/builder/pane_builder.sh"
+# shellcheck source=./utils/tmux_utils.sh
+source "${PLUGIN_DIR}/utils/tmux_utils.sh"
+# shellcheck source=./utils/interpolate_utils.sh
+source "${PLUGIN_DIR}/utils/interpolate_utils.sh"
+# shellcheck source=./utils/module_utils.sh
+source "${PLUGIN_DIR}/utils/module_utils.sh"
 
 main() {
-  local theme
-  theme="$(get_tmux_option "@catppuccin_flavour" "mocha")"
-
   # Aggregate all commands in one array
   local tmux_commands=()
 
+  # Aggregate all tmux option for tmux_batch_option
+  local tmux_batch_options_commands=()
+  local tmux_batch_options=()
+
+  # Batch options for loading the colorscheme and everyting before
+  add_tmux_batch_option "@catppuccin_custom_plugin_dir"
+  add_tmux_batch_option "@catppuccin_flavor"
+
+  run_tmux_batch_commands
+
+  # module directories
+  local custom_path modules_custom_path modules_status_path modules_window_path modules_pane_path
+  custom_path="$(get_tmux_batch_option "@catppuccin_custom_plugin_dir" "${PLUGIN_DIR}/custom")"
+  modules_custom_path=$custom_path
+  modules_status_path=$PLUGIN_DIR/status
+  modules_window_path=$PLUGIN_DIR/window
+  modules_pane_path=$PLUGIN_DIR/pane
+
+  # load local theme
+  local theme
+  local color_interpolation=()
+  local color_values=()
+  local temp
+
+  theme="$(get_tmux_batch_option "@catppuccin_flavor" "")"
+
+  # NOTE: For backwards compatibility remove before 1.0.0 and set default for
+  # `@catppuccin_flavor` from `""` to `"mocha"`
+  if [ -z "$theme" ]; then
+    theme="$(get_tmux_option "@catppuccin_flavour" "")"
+    if [ -n "$theme" ]; then
+      tmux_echo "catppuccin warning: \\\"@catppuccin_flavour\\\" has been deprecated use \\\"@catppuccin_flavor\\\"" 103
+    else
+      theme="mocha"
+    fi
+  fi
+
   # NOTE: Pulling in the selected theme by the theme that's being set as local
   # variables.
-  # shellcheck source=catppuccin-frappe.tmuxtheme
-  source /dev/stdin <<<"$(sed -e "/^[^#].*=/s/^/local /" "${PLUGIN_DIR}/catppuccin-${theme}.tmuxtheme")"
+  # https://github.com/dylanaraps/pure-sh-bible#parsing-a-keyval-file
+  # shellcheck source=./catppuccin-frappe.tmuxtheme
+  while IFS='=' read -r key val; do
+    # Skip over lines containing comments.
+    # (Lines starting with '#').
+    [ "${key##\#*}" ] || continue
 
-  # status
-  set status "on"
-  set status-bg "${thm_bg}"
-  set status-justify "left"
+    # '$key' stores the key.
+    # '$val' stores the value.
+    eval "local $key"="$val"
+
+    # TODO: Find a better way to strip the quotes from `$val`
+    temp="${val%\"}"
+    temp="${temp#\"}"
+    color_interpolation+=("\#{$key}")
+    color_values+=("${temp}")
+  done <"${PLUGIN_DIR}/themes/catppuccin_${theme}.tmuxtheme"
+
+  # Batch options for `./catppuccin.tmux`
+  add_tmux_batch_option "@catppuccin_status_default"
+  add_tmux_batch_option "@catppuccin_status_justify"
+  add_tmux_batch_option "@catppuccin_status_background"
+  add_tmux_batch_option "@catppuccin_menu_style"
+  add_tmux_batch_option "@catppuccin_menu_selected_style"
+  add_tmux_batch_option "@catppuccin_menu_border_style"
+  add_tmux_batch_option "@catppuccin_pane_status_enabled"
+  add_tmux_batch_option "@catppuccin_pane_border_status"
+  add_tmux_batch_option "@catppuccin_pane_border_style"
+  add_tmux_batch_option "@catppuccin_pane_active_border_style"
+  add_tmux_batch_option "@catppuccin_pane_left_separator"
+  add_tmux_batch_option "@catppuccin_pane_middle_separator"
+  add_tmux_batch_option "@catppuccin_pane_right_separator"
+  add_tmux_batch_option "@catppuccin_pane_number_position"
+  add_tmux_batch_option "@catppuccin_window_separator"
+  add_tmux_batch_option "@catppuccin_window_left_separator"
+  add_tmux_batch_option "@catppuccin_window_right_separator"
+  add_tmux_batch_option "@catppuccin_window_middle_separator"
+  add_tmux_batch_option "@catppuccin_window_number_position"
+  add_tmux_batch_option "@catppuccin_window_status"
+  add_tmux_batch_option "@catppuccin_status_left_separator"
+  add_tmux_batch_option "@catppuccin_status_right_separator"
+  add_tmux_batch_option "@catppuccin_status_connect_separator"
+  add_tmux_batch_option "@catppuccin_status_fill"
+  add_tmux_batch_option "@catppuccin_status_modules_left"
+  add_tmux_batch_option "@catppuccin_status_modules_right"
+
+  run_tmux_batch_commands
+
+  # status general
+  local status_default status_justify status_background message_background
+  status_default=$(get_tmux_batch_option "@catppuccin_status_default" "on")
+  # shellcheck disable=SC2121
+  set status "$status_default"
+
+  status_justify=$(get_tmux_batch_option "@catppuccin_status_justify" "left")
+  set status-justify "$status_justify"
+
+  status_background=$(get_tmux_batch_option "@catppuccin_status_background" "theme")
+  if [ "${status_background}" = "theme" ]; then
+    set status-bg "${thm_bg}"
+    message_background="${thm_gray}"
+  else
+    if [ "${status_background}" = "default" ]; then
+      set status-style bg=default
+      message_background="default"
+    else
+      message_background="$(do_color_interpolation "$status_background")"
+      set status-bg "${message_background}"
+    fi
+  fi
+
   set status-left-length "100"
   set status-right-length "100"
 
   # messages
-  set message-style "fg=${thm_cyan},bg=${thm_gray},align=centre"
-  set message-command-style "fg=${thm_cyan},bg=${thm_gray},align=centre"
+  set message-style "fg=${thm_cyan},bg=${message_background},align=centre"
+  set message-command-style "fg=${thm_cyan},bg=${message_background},align=centre"
+
+  # menu
+  local menu_style menu_selected_style menu_border_style
+  menu_style=$(get_interpolated_tmux_batch_option "@catppuccin_menu_style" "default")
+  menu_selected_style=$(get_interpolated_tmux_batch_option "@catppuccin_menu_selected_style" "fg=${thm_gray},bg=${thm_yellow}")
+  menu_border_style=$(get_interpolated_tmux_batch_option "@catppuccin_menu_border_style" "default")
+  set menu-style "$menu_style"
+  set menu-selected-style "$menu_selected_style"
+  set menu-border-style "$menu_border_style"
 
   # panes
-  set pane-border-style "fg=${thm_gray}"
-  set pane-active-border-style "fg=${thm_blue}"
+  local pane_border_status pane_border_style \
+    pane_active_border_style pane_left_separator pane_middle_separator \
+    pane_right_separator pane_number_position pane_format
+  pane_status_enable=$(get_tmux_batch_option "@catppuccin_pane_status_enabled" "no") # yes
+  pane_border_status=$(get_tmux_batch_option "@catppuccin_pane_border_status" "off") # bottom
+  pane_border_style=$(
+    get_interpolated_tmux_batch_option "@catppuccin_pane_border_style" "fg=${thm_gray}"
+  )
+  pane_active_border_style=$(
+    get_interpolated_tmux_batch_option "@catppuccin_pane_active_border_style" \
+      "#{?pane_in_mode,fg=${thm_yellow},#{?pane_synchronized,fg=${thm_magenta},fg=${thm_orange}}}"
+  )
+  pane_left_separator=$(get_tmux_batch_option "@catppuccin_pane_left_separator" "█")
+  pane_middle_separator=$(get_tmux_batch_option "@catppuccin_pane_middle_separator" "█")
+  pane_right_separator=$(get_tmux_batch_option "@catppuccin_pane_right_separator" "█")
+  pane_number_position=$(get_tmux_batch_option "@catppuccin_pane_number_position" "left") # right, left
+  pane_format=$(load_modules "pane_default_format" "$modules_custom_path" "$modules_pane_path")
 
-  # windows
-  setw window-status-activity-style "fg=${thm_fg},bg=${thm_bg},none"
-  setw window-status-separator ""
-  setw window-status-style "fg=${thm_fg},bg=${thm_bg},none"
+  setw pane-border-status "$pane_border_status"
+  setw pane-active-border-style "$pane_active_border_style"
+  setw pane-border-style "$pane_border_style"
+  setw pane-border-format "$(do_color_interpolation "$pane_format")"
 
-  # --------=== Statusline
+  # window
+  local window_status_separator window_left_separator window_right_separator \
+    window_middle_separator window_number_position window_status_enable \
+    window_format window_current_format
 
-  # NOTE: Checking for the value of @catppuccin_window_tabs_enabled
-  local wt_enabled
-  wt_enabled="$(get_tmux_option "@catppuccin_window_tabs_enabled" "off")"
-  readonly wt_enabled
-  
-  local right_separator
-  right_separator="$(get_tmux_option "@catppuccin_right_separator" "")"
-  readonly right_separator
-  
-  local left_separator
-  left_separator="$(get_tmux_option "@catppuccin_left_separator" "")"
-  readonly left_separator
+  window_status_separator=$(get_interpolated_tmux_batch_option "@catppuccin_window_separator" "")
+  setw window-status-separator "$window_status_separator"
 
-  local user
-  user="$(get_tmux_option "@catppuccin_user" "off")"
-  readonly user
+  window_left_separator=$(get_tmux_batch_option "@catppuccin_window_left_separator" "█")
+  window_right_separator=$(get_tmux_batch_option "@catppuccin_window_right_separator" "█")
+  window_middle_separator=$(get_tmux_batch_option "@catppuccin_window_middle_separator" "█ ")
+  window_number_position=$(get_tmux_batch_option "@catppuccin_window_number_position" "left") # right, left
 
-  local host
-  host="$(get_tmux_option "@catppuccin_host" "off")"
-  readonly host
+  # NOTE: update default to `"no"` when removing the backwards compatibility for
+  # `@catppuccin_window_status_enable` and
+  # `@catppuccin_window_status_icon_enable` in ./builder/window_builder.sh
+  window_status=$(get_tmux_batch_option "@catppuccin_window_status" "no") # no, icon, text
 
-  local date_time
-  date_time="$(get_tmux_option "@catppuccin_date_time" "off")"
-  readonly date_time
+  window_format=$(load_modules "window_default_format" "$modules_custom_path" "$modules_window_path")
+  setw window-status-format "$(do_color_interpolation "$window_format")"
 
-  # These variables are the defaults so that the setw and set calls are easier to parse.
-  local show_directory
-  readonly show_directory="#[fg=$thm_pink,bg=$thm_bg,nobold,nounderscore,noitalics]$right_separator#[fg=$thm_bg,bg=$thm_pink,nobold,nounderscore,noitalics]  #[fg=$thm_fg,bg=$thm_gray] #{b:pane_current_path} #{?client_prefix,#[fg=$thm_red]"
+  window_current_format=$(load_modules "window_current_format" "$modules_custom_path" "$modules_window_path")
+  setw window-status-current-format "$(do_color_interpolation "$window_current_format")"
 
-  local show_window
-  readonly show_window="#[fg=$thm_pink,bg=$thm_bg,nobold,nounderscore,noitalics]$right_separator#[fg=$thm_bg,bg=$thm_pink,nobold,nounderscore,noitalics] #[fg=$thm_fg,bg=$thm_gray] #W #{?client_prefix,#[fg=$thm_red]"
+  # status module
+  local status_left_separator status_right_separator status_connect_separator \
+    status_fill status_modules_left status_modules_right
+  status_left_separator=$(get_tmux_batch_option "@catppuccin_status_left_separator" "")
+  status_right_separator=$(get_tmux_batch_option "@catppuccin_status_right_separator" "█")
+  status_connect_separator=$(get_tmux_batch_option "@catppuccin_status_connect_separator" "yes")
+  status_fill=$(get_tmux_batch_option "@catppuccin_status_fill" "icon")
 
-  local show_session
-  readonly show_session="#[fg=$thm_green]}#[bg=$thm_gray]$right_separator#{?client_prefix,#[bg=$thm_red],#[bg=$thm_green]}#[fg=$thm_bg] #[fg=$thm_fg,bg=$thm_gray] #S "
+  status_modules_left=$(get_tmux_batch_option "@catppuccin_status_modules_left" "")
+  loaded_modules_left=$(load_modules "$status_modules_left" "$modules_custom_path" "$modules_status_path")
+  set status-left "$(do_color_interpolation "$loaded_modules_left")"
 
-  local show_directory_in_window_status
-  readonly show_directory_in_window_status="#[fg=$thm_bg,bg=$thm_blue] #I #[fg=$thm_fg,bg=$thm_gray] #{b:pane_current_path} "
+  status_modules_right=$(get_tmux_batch_option "@catppuccin_status_modules_right" "application session")
+  loaded_modules_right=$(load_modules "$status_modules_right" "$modules_custom_path" "$modules_status_path")
+  set status-right "$(do_color_interpolation "$loaded_modules_right")"
 
-  local show_directory_in_window_status_current
-  readonly show_directory_in_window_status_current="#[fg=$thm_bg,bg=$thm_orange] #I #[fg=$thm_fg,bg=$thm_bg] #{b:pane_current_path} "
-
-  local show_window_in_window_status
-  readonly show_window_in_window_status="#[fg=$thm_fg,bg=$thm_bg] #W #[fg=$thm_bg,bg=$thm_blue] #I#[fg=$thm_blue,bg=$thm_bg]$left_separator#[fg=$thm_fg,bg=$thm_bg,nobold,nounderscore,noitalics] "
-
-  local show_window_in_window_status_current
-  readonly show_window_in_window_status_current="#[fg=$thm_fg,bg=$thm_gray] #W #[fg=$thm_bg,bg=$thm_orange] #I#[fg=$thm_orange,bg=$thm_bg]$left_separator#[fg=$thm_fg,bg=$thm_bg,nobold,nounderscore,noitalics] "
-
-  local show_user
-  readonly show_user="#[fg=$thm_blue,bg=$thm_gray]$right_separator#[fg=$thm_bg,bg=$thm_blue] #[fg=$thm_fg,bg=$thm_gray] #(whoami) "
-
-  local show_host
-  readonly show_host="#[fg=$thm_blue,bg=$thm_gray]$right_separator#[fg=$thm_bg,bg=$thm_blue] #[fg=$thm_fg,bg=$thm_gray] #H "
-
-  local show_date_time
-  readonly show_date_time="#[fg=$thm_blue,bg=$thm_gray]$right_separator#[fg=$thm_bg,bg=$thm_blue] #[fg=$thm_fg,bg=$thm_gray] $date_time "
-
-  # Right column 1 by default shows the Window name.
-  local right_column1=$show_window
-
-  # Right column 2 by default shows the current Session name.
-  local right_column2=$show_session
-
-  # Window status by default shows the current directory basename.
-  local window_status_format=$show_directory_in_window_status
-  local window_status_current_format=$show_directory_in_window_status_current
-
-  # NOTE: With the @catppuccin_window_tabs_enabled set to on, we're going to
-  # update the right_column1 and the window_status_* variables.
-  if [[ "${wt_enabled}" == "on" ]]; then
-    right_column1=$show_directory
-    window_status_format=$show_window_in_window_status
-    window_status_current_format=$show_window_in_window_status_current
-  fi
-
-  if [[ "${user}" == "on" ]]; then
-    right_column2=$right_column2$show_user
-  fi
-
-  if [[ "${host}" == "on" ]]; then
-    right_column2=$right_column2$show_host
-  fi
-
-  if [[ "${date_time}" != "off" ]]; then
-    right_column2=$right_column2$show_date_time
-  fi
-
-  set status-left ""
-
-  set status-right "${right_column1},${right_column2}"
-
-  setw window-status-format "${window_status_format}"
-  setw window-status-current-format "${window_status_current_format}"
-
-  # --------=== Modes
-  #
+  # modes
   setw clock-mode-colour "${thm_blue}"
   setw mode-style "fg=${thm_pink} bg=${thm_black4} bold"
 
